@@ -1,0 +1,512 @@
+the purpse of the project is to automate the process of transfering bookeo data into reserve.
+
+## Testing without touching source data
+
+Bookeo is the source system here, so nothing should ever write to it during
+testing -- only call its read endpoints (test_connection, get_bookings /
+get_all_bookings, get_booking, get_customers, get_customer,
+get_availability). bookeo_api.py's create_booking() exists for completeness
+but should never be called against the real Bookeo account as part of this
+migration.
+
+On the Reserve (SCS Gateway) side, writes are unavoidable since that's the
+destination, but SCS gives us three ways to test without polluting real data:
+
+1. QA environment first -- SCSGatewayClient(environment="qa") hits
+   qa.reservecloud.com instead of production. Limited uptime and it wipes
+   contact info on refresh, so coordinate timing with SCS support and don't
+   rely on data persisting there between sessions.
+2. mode="test" on every Put Request -- put_request()/BookReservation/
+   ReservationUpdate/CancelReservation all accept mode="test" for a
+   server-side dry run that validates without applying. Always run test
+   mode until every row comes back Created/Merged before ever using
+   mode="apply".
+3. Temporary Holds for real end-to-end tests -- book_reservation(...,
+   temporary_hold=True) / book_temporary_hold() create a reservation that
+   blocks inventory but is invisible to SCS users and can only be
+   cancelled/converted by this gateway. This is the way to test a full
+   booking round-trip (including services, party mix, pricing) without
+   creating a reservation a staff member would ever see. Must wrap in
+   try/finally and call cancel_reservation() / release_temporary_hold() on
+   every exit path -- SCS puts cleanup entirely on us. cleanup.py and
+   ReservationsAPI.cancel_all_temporary_holds() exist to sweep any holds
+   left behind by a crashed test run; run that sweep after every test batch
+   before assuming the environment is clean.
+
+Recommended order for a migration test batch: pull real Bookeo data
+(read-only, safe) -> translate it locally -> push to SCS QA if available,
+else production with mode="test" -> once test mode is clean, push a small
+sample as temporary holds against production -> verify via
+get_reservation_service_options()/a Reservation Get Request -> cancel the
+holds -> only then consider mode="apply" on real (non-hold) data.
+
+## Does Bookeo data map 1:1 onto Reserve, or does it need cleaning?
+
+Short answer: it needs cleaning, not a straight pass-through. Concrete
+mismatches found just from comparing the two clients so far:
+
+- Date/time format: SCS's ReservationCheckAvailability/BookReservation take
+  reservationDate as "MM/DD/YYYY" and times as "h:mm AM/PM" (see
+  Reserve/main.py's "07/18/2026" / "3:55 AM"). Bookeo's /bookings endpoint
+  uses ISO 8601 timestamps ("2026-07-16T00:00:00Z", per the commented
+  example in bookeo/main.py). These need explicit conversion, including
+  timezone handling since Bookeo's times are UTC and SCS's are presumably
+  venue-local.
+- Controlled vocabularies vs free text: SCS fields like reservationTypes,
+  serviceOptions, requests (asset attributes), specialOccasions,
+  cancellationReasons, paymentMethods/paymentTypes are closed lists specific
+  to the Alley Cats SCS site -- pulled via
+  get_reservation_field_options(site_names=[...]). Bookeo's equivalent
+  fields (product/resource names, categories) are whatever was set up in
+  Bookeo and won't line up with SCS's option names automatically. A mapping
+  table (Bookeo value -> SCS option) needs to be built and validated against
+  a fresh get_reservation_field_options() pull -- don't hardcode it, since
+  SCS's own docs say these options can change and should be refreshed
+  ~daily.
+- Party size / asset counts: Bookeo's numberOfPeople vs SCS's partySize
+  (sent as a string) and numberOfAssets (int, must be >=2 when set) --
+  types and semantics (people vs. physical assets/lanes) aren't the same
+  concept and need an explicit rule, not a rename.
+- Contact fields: SCS's BookReservation requires firstName/lastName/email/
+  mobilePhone as top-level fields; Bookeo customer records may have
+  different phone formatting/optional fields -- needs validation/
+  normalization before booking or SCS will likely reject or silently
+  mis-file it.
+
+## Live sample pull (2026-08-20) -- confirmed against real data
+
+Pulled via read-only calls only (Bookeo /settings/apikeyinfo, /customers,
+/bookings; SCS HealthCheck, GetReservationFieldOptions for site "Alley Cats
+Entertainment, Burleson" / code ACEB) -- nothing was written to either
+system. Corrects and confirms the guesses above:
+
+- Timezone correction: Bookeo's startTime/endTime already carry a
+  venue-local UTC offset (e.g. "2026-07-21T12:00:00-05:00"), not bare UTC
+  as assumed above. Still needs splitting into SCS's separate
+  reservationDate ("MM/DD/YYYY") + desiredTimeFrom ("h:mm AM/PM") fields,
+  but no timezone conversion is needed, just parsing/formatting.
+- SCS's controlled vocabularies are mostly EMPTY for this site right now:
+  reservationTypes: [], assetDetailTypes: [], paymentMethods: [],
+  paymentTypes: [] all came back empty. Only requests: ["Bowling"] and a
+  handful of serviceDetails/serviceOptions/specialOccasions/
+  cancellationReasons/referralTypes/confirmationStatuses are populated.
+  This means reservation "type" and payment info have NOWHERE to map into
+  on the SCS side yet -- these lists need to be populated in SCS
+  (Settings > Reservations, by a human) before that part of the migration
+  can work at all, independent of any code changes.
+- Party size doesn't carry over cleanly: Bookeo splits headcount by
+  category (participants.numbers: [{peopleCategoryId: "Cadults",
+  "number": 2}], can have multiple categories e.g. adults/children), SCS
+  wants one partySize number. Summing categories works for partySize but
+  loses the adult/child breakdown unless it's stuffed into comments.
+- Add-ons have no destination: Bookeo's per-booking options[] (free-text
+  answers like shoe sizes, pizza choice, drink, game-card add-on) don't
+  correspond to any of SCS's serviceOptions/serviceDetails for this site
+  ("Corkage Fee", "Special Dessert with Candle", "Highchair", "Wheelchair
+  Access"). These would need to go into reservation.comments as text, or
+  new matching SCS serviceOptions would need to be created first.
+- Duplicate customers confirmed in Bookeo: the customer sample included
+  two separate customer records with the same name/email/phone/address
+  (different Bookeo customer ids). A straight 1:1 customer migration would
+  create duplicate SCS contacts -- de-dupe by email+phone before pushing
+  contacts over.
+- Cancellation reason has no source: Bookeo's `canceled` is just a bool
+  with no reason captured, but SCS's cancel_reservation() flow expects a
+  cancellationReason from a fixed list ("Changed Mind", "Illness",
+  "Other"). Need a default (e.g. "Other") for anything migrated after the
+  fact.
+- No shared identifier: Bookeo's bookingNumber/customerId/productId and
+  SCS's confirmationNumber/uniqueId/siteUniqueId are unrelated ID spaces --
+  the migration script needs to keep its own
+  Bookeo-id -> SCS-confirmationNumber mapping table, SCS won't do that
+  correlation for us.
+
+Net: not 1:1. Needs (a) a field-transform layer (date/time split, party
+size aggregation, phone/contact normalization), (b) an explicit
+Bookeo-value -> SCS-option lookup table built from a fresh
+get_reservation_field_options() pull (not hardcoded, since SCS says these
+can change), (c) SCS-side admin configuration for reservationTypes/
+assetDetailTypes/paymentMethods/paymentTypes before those fields can be
+migrated at all, and (d) a dedupe pass on customers before contact import.
+
+(Raw sample output, including real customer names/emails/phones/addresses,
+was printed to the terminal during this pull but deliberately NOT copied
+into this file, since Project_details.txt isn't in .gitignore and
+shouldn't hold PII in plaintext.)
+
+## Field-transform script
+
+migration/transform.py implements the mapping table above as pure,
+unit-testable functions (split_bookeo_datetime, aggregate_party_size,
+pick_mobile_phone, dedupe_customers, format_addons_comment, map_requests,
+transform_booking) -- verified against real sample shapes on 2026-08-20.
+map_requests() takes an optional `available_requests` list from a fresh
+get_reservation_field_options() pull and raises if the static REQUEST_MAP
+points at a value SCS doesn't actually have configured, rather than
+trusting the map blindly. run_sample() at the bottom of the file is a
+read-only demo (pulls 5 real bookings + their customers from Bookeo, real
+field options from SCS, prints the transformed rows) -- it makes no writes
+to either system.
+
+Still not built: the SCS-side admin config for reservationTypes/
+assetDetailTypes/paymentMethods/paymentTypes noted above (that's an SCS
+Settings change, not code).
+
+## ID-correlation table
+
+migration/id_map.py implements the Bookeo-bookingNumber <-> SCS-
+confirmationNumber correlation table: a JSON-file-backed IdMap class
+(id_map.json, gitignored) keyed by Bookeo bookingNumber, storing
+confirmationNumber/uniqueId/siteUniqueId/status/bookeo_customer_id/
+updated_at. is_migrated(booking_number) is what the push step should check
+before booking anything, so a retried/crashed migration run doesn't create
+a duplicate SCS reservation for a booking it already pushed.
+update_status() tracks a booking through temporary_hold -> booked ->
+cancelled; a cancelled entry is_migrated()=False again so a re-run can
+legitimately re-push it. Writes are atomic (temp file + os.replace) and
+every mutation saves immediately -- verified by killing/reloading a fresh
+IdMap mid-test and confirming the entry survived. Also has a CLI
+(`python id_map.py list` / `show <booking_number>`) for inspecting the map
+without writing a throwaway script each time.
+
+## Push/orchestration script
+
+migration/push.py is the actual write step, and it ONLY writes via
+Temporary Holds -- no mode="apply", no permanent bookings, matching the
+Testing section's staged approach. Flow per booking: find_reservation_code()
+calls check_availability() with the transformed date/time/party_size/
+requests and takes the first live SCS slot; push_booking() then calls
+book_reservation(..., temporary_hold=True) with transform.py's contact
+fields + comments, and records the result in id_map the instant the hold
+is created. If that id_map write itself fails, the hold is cancelled
+immediately rather than left orphaned with no local record of it --
+verified with a fake IdMap.record() that raises, confirming
+cancel_reservation() gets called before the error propagates.
+push_booking() is idempotent (id_map.is_migrated() short-circuits a
+booking that's already been pushed, no duplicate SCS call). Verified
+end-to-end against a fake ReservationsAPI (no live calls made building
+this): successful push, idempotent re-push skip, no-availability ->
+PushError with nothing recorded, record-failure -> hold cancelled, and
+cleanup_all_holds() correctly sweeping/cancelling only the live
+temporary_hold entries.
+
+CLI: `python push.py push <start_iso> <end_iso> [--limit N]
+[--cleanup-after]` pulls real Bookeo bookings in that window (max 31 days,
+per Bookeo's own limit) and pushes each as a temp hold;
+`python push.py cleanup` sweeps every temporary_hold currently in id_map
+regardless of which run created it -- run this after any test batch that
+didn't use --cleanup-after.
+
+Caveat: check_availability() only returns currently-open FUTURE slots, so
+this can validate the push mechanism against a near-future Bookeo booking
+but can't retroactively recreate an already-passed one in SCS.
+
+## Live end-to-end test (2026-08-20) -- confirmed working
+
+Ran push_booking() against one real Bookeo booking (bookingNumber
+1577608159797258, "Weekend Bowling Reservations - 90 min", startTime
+2026-08-21T18:00:00-05:00, party size 6) and one real SCS site:
+
+1. transform_booking() produced reservation_date=08/21/2026,
+   desired_time_from=6:00 PM, party_size=6, requests=["Bowling"].
+2. find_reservation_code() found a live slot via check_availability().
+3. push_booking() booked it as a temporary hold -> confirmationNumber
+   ACEB6, assigned Lane 1 (confirmed via a read-only
+   get_reservation_service_options(confirmation_number="ACEB6") call
+   right after booking).
+4. id_map recorded the mapping (status=temporary_hold) immediately.
+5. cancel_reservation() cancelled the hold; id_map updated to
+   status=cancelled.
+6. Re-queried get_reservation_service_options(confirmation_number="ACEB6")
+   afterward -- it now errors (SCSGatewayError, 500), confirming the hold
+   is actually gone, not just marked cancelled locally.
+
+No permanent reservation was created and nothing is left blocking
+inventory. This validates the full push/orchestration pipeline against
+live production Bookeo + SCS data, not just the fake-API test in the
+section above. Run via a throwaway script in /tmp (not checked into this
+project) since python-dotenv isn't installed in this sandbox and
+bookeo_api.py/scs_gateway.py both hard-depend on it -- see Setup in each
+project's readme for the real install step (`pip install -r
+requirements.txt`) on a machine that has pip.
+
+## Live batch test, 5 bookings (2026-08-20) -- 5/5 succeeded
+
+Ran push.run_push() for real (via the same /tmp shim setup) against the
+same window, limit=5, writing to the project's actual migration/
+id_map.json this time (not a scratch path) since this is the real
+correlation table going forward. All 5 real Bookeo bookings in
+[2026-08-21T00:00:00Z, 2026-09-10T00:00:00Z) pushed as SCS temporary
+holds on the first try -- no PushError, no transform failures:
+
+  1577608159797258 -> ACEB7   (Lane 1)
+  1577608198190282 -> ACEB8   (Lane 2)
+  1577608189795841 -> ACEB9   (Lane 3, Lane 4 -- multi-lane, bigger party)
+  1577608129270059 -> ACEB10  (Lane 1, Lane 2)
+  1577608063940595 -> ACEB11  (Lane 3, Lane 4)
+
+Each was verified live via get_reservation_service_options() right after
+booking (all returned real assetNames), then all 5 were cancelled via
+cleanup_all_holds(), and each confirmation number was re-queried
+afterward -- all 5 now error out, confirming none were left blocking
+inventory. migration/id_map.json (gitignored) now holds these 5 entries,
+all status=cancelled.
+
+Net: the push/orchestration pipeline has now been proven at both n=1 and
+n=5 against live production data with a 100% success rate and clean
+cleanup every time. Note DEFAULT_REQUEST in transform.py means
+map_requests() currently falls back to ["Bowling"] for literally any
+product name when only one SCS request value is configured (there's
+nothing else for it to fall back to) -- this hasn't been a problem yet
+since the site only has "Bowling" configured, but if/when SCS gets more
+requests configured, REQUEST_MAP needs real entries per product or this
+silently mismaps everything to "Bowling".
+
+## Live batch test, full remaining window (2026-08-20) -- 22/27 succeeded
+
+Ran the same window's full 27 bookings (confirmed via Bookeo's `info`:
+totalItems=27, totalPages=1, so this really was all of them, not a partial
+page) minus the 5 already recorded in id_map from the prior batch -- 22
+remaining, all attempted:
+
+  - 17 pushed successfully as temporary holds, each verified live via
+    get_reservation_service_options() (real assetNames came back,
+    including several multi-lane bookings for bigger parties), then all
+    cancelled via cleanup_all_holds() and re-verified gone (0 still
+    resolved afterward).
+  - 5 failed at find_reservation_code() with "No SCS availability" for
+    their transformed date/time (08/22 5:00 PM, 08/29 11:00 AM, 08/30
+    12:30 PM, 08/30 3:30 PM, 09/05 12:30 PM). push_booking() correctly
+    raised PushError and recorded nothing for these -- no partial/bad
+    state, they're simply not in id_map at all and will be retried on any
+    future push run.
+
+Combined with the earlier single-booking and 5-booking tests today, that's
+23 of 27 real bookings in this window pushed and cleanly torn down over
+three separate runs, all still marked cancelled/not-present in id_map
+(nothing currently held).
+
+## Root cause of the 5 failures, found and fixed (2026-08-20)
+
+It was a script bug, not a genuine SCS/Bookeo inventory conflict.
+Investigation: all 5 failing bookings were large party packages (King
+Pin, The Extreme, Strike & Spare -- party_size 14-20), while every
+succeeding JRPYAC-category booking topped out at party_size 12. Live
+testing on 08/22/2026 confirmed the exact cutoff: check_availability()
+with party_size 10/11/12 returns 50 results, party_size 13+ returns 0 --
+with everything else identical. SCS's default (unspecified
+number_of_assets) search only auto-combines up to 2 lanes; explicitly
+passing number_of_assets=3 for a party of 14 on the same previously-empty
+slot returned 10 real results (Lane 3/4/5). Confirmed for all 5: each
+needed number_of_assets=3 (party_size 14-15) or 4 (party_size 20) to find
+availability that was there all along.
+
+Fixed in migration/push.py's find_reservation_code(): instead of a single
+check_availability() call, it now tries the default search first, and if
+that comes back empty, retries with number_of_assets=3,4,...,8 until one
+finds a slot (raises PushError only if every attempt is empty). Doesn't
+hardcode a per-lane capacity number (not a documented SCS setting) --
+just searches outward. Verified against a mocked API first (existing
+small-party case still resolves in one call, no regression; a
+crafted-empty-until-number_of_assets=4 case correctly retries and finds
+it; a fully-empty case still raises PushError after exhausting 3-8).
+
+Then re-ran live against the actual 5 previously-failed bookings:
+all 5 pushed successfully (ACEB29-ACEB33, using 3-4 lanes each), verified
+live, then cancelled and confirmed gone. Combined with the earlier 22,
+that's 27/27 real bookings in this window now proven to push successfully
+end-to-end, with nothing left held in SCS.
+
+## Full Bookeo history scope survey (2026-08-20)
+
+Asked to run against "the full remaining Bookeo history" -- surveyed
+scope read-only first (31-day chunked get_bookings() calls, scanning
+backward and forward from today until 3 consecutive empty chunks) rather
+than attempting it blind:
+
+  - 2,529 PAST bookings, 2024-08-20 through 2026-08-10. These are
+    structurally unreachable by this pipeline -- check_availability()
+    only returns currently-open FUTURE slots, so there is no
+    reservationCode to book against for something that already happened.
+    Not a bug, not fixable the way the lane-capacity issue was; would
+    need a completely different SCS mechanism (if one even exists) to
+    backfill historical records. Nothing was attempted against these.
+  - 39 FUTURE bookings total, 2026-08-21 through 2026-12-12. 27 were
+    already covered by the earlier window test.
+
+## Live run: remaining 12 future bookings (2026-08-20) -- 12/12 succeeded
+
+Pushed the 12 future bookings not yet in id_map (spanning the rest of
+Sep/Oct 2026 plus two in Nov/Dec 2026). All 12 succeeded on the first
+try, including a party_size=24 booking that needed 4 lanes (Lane 2-5) --
+confirming the number_of_assets retry fix scales beyond the 14-20 range
+it was built against. Each verified live via
+get_reservation_service_options(), then all 12 cancelled and confirmed
+gone (0 still resolving afterward).
+
+id_map.json now holds all 39 future Bookeo bookings, every one proven to
+push/verify/cancel successfully -- that's 100% of everything this
+pipeline can currently reach. The 2,529 past bookings remain untouched
+and out of scope until/unless a different mechanism for historical data
+is designed.
+
+## Commit step added, real permanent reservations created (2026-08-24)
+
+push.py gained convert_to_permanent()/commit_all_holds() and a
+`python push.py commit` CLI entry: takes every temporary_hold entry
+currently in id_map and converts it into a real, permanent SCS
+reservation (visible to staff) via the already-tested
+release_temporary_hold() (ReservationUpdate with temporaryHold=false).
+No mode="apply" involved -- this is the same Put mechanism used for the
+prior temp-hold tests, just flipping the hold flag off on holds that
+already passed validation. Mirrors cleanup_all_holds() but converts
+instead of cancelling; convert_to_permanent() is a no-op for any booking
+not currently in temporary_hold status (already converted or never
+pushed), and if release_temporary_hold() raises, nothing is recorded and
+the entry stays temporary_hold for a retry.
+
+Run live against production: 38 Bookeo bookings converted to permanent
+SCS reservations (confirmationNumbers ACEB47 and others in that range),
+id_map status updated hold->booked for each immediately after each
+successful conversion, matching id_map.py's is_migrated() semantics (a
+"booked" entry is migrated and won't be re-pushed). 11 older entries
+remain status=cancelled from earlier test cycles (pushed and torn down
+during the 2026-08-20 test batches, never re-pushed) -- those still need
+a real push+commit pass if the underlying Bookeo bookings are still
+live/future. id_map.json now has 49 total entries vs. the 39 counted on
+2026-08-20, meaning new bookings were added in Bookeo over the
+intervening 4 days and got picked up by push.py's normal window pull.
+
+Verified read-only afterward: sampled 6 of the 38 booked
+confirmationNumbers via get_reservation_service_options(confirmation_number=...)
+-- all 6 resolved live with real assetNames/partyMix/reservationServices,
+confirming the reservations are genuinely live in SCS and not just
+recorded locally.
+
+Net: this is the first batch of REAL, PERMANENT reservations created in
+production SCS by this pipeline (previously every live-system test used
+temporary holds that were always cancelled afterward). Still open: the
+11 cancelled entries and any newly-appeared Bookeo bookings not yet
+covered by id_map need a fresh push -> verify -> commit pass.
+
+## Re-survey + same-contact-same-time collision found and fixed (2026-08-25)
+
+Re-ran the scope survey (same 31-day-chunk method as 2026-08-20) from
+today forward: 40 future Bookeo bookings now, in three non-contiguous
+windows (08/24-09/24, 09/24-10/25, 11/25-12/26) -- up from 39 on 08-20,
+confirming new Bookeo bookings appear over time and any push run should
+re-survey rather than trust an old scope. Also fixed a real gap in
+run_push() before this run: it never checked Bookeo's `canceled` flag, so
+a retried run could have re-booked a Bookeo booking the guest had
+actually cancelled (one of the 11 old cancelled id_map entries,
+1577608053234202, turned out to be canceled=true in Bookeo -- confirmed
+via a read-only get_booking() check before running anything).
+
+Running push across the new scope: all 38 previously-booked entries
+correctly skipped (idempotent), and 2 new bookings failed with a
+never-seen-before SCS error: "This contact already has a reservation
+within 3 hours of the requested start time." Investigated read-only
+(pulling both bookings + all of 08/29's bookings from Bookeo): Trinitee
+Blu and Heath Crane each have TWO separate, non-cancelled Bookeo booking
+numbers at the exact same startTime (16:00 and 18:00 respectively) --
+almost certainly a party that needed 2 lanes and got entered as 2
+separate Bookeo transactions instead of one. One of each pair was already
+migrated (ACEB53, ACEB54); the second collided with SCS's same-contact
+rule. Crane's pair is a genuine duplicate-Bookeo-customer-record case
+(confirmed: two different Bookeo customerIds, same email+phone) --
+grouping on raw Bookeo customerId would have missed it entirely.
+
+Fixed in push.py: run_push() now groups pulled bookings by exact
+startTime, resolves contact (email+phone, post-transform, not raw Bookeo
+customerId) for any that collide on time, and pushes a same-contact group
+as ONE merged reservation (summed party_size, comments noting the
+constituent Bookeo booking numbers) via new push_merged_booking() --
+reusing find_reservation_code()'s existing number_of_assets retry for the
+resulting bigger party, same mechanism already proven for single large
+bookings. push_merged_booking() deliberately raises MergeConflict and
+writes nothing if a group is only partially migrated or migrated under
+different confirmation numbers -- that means a constituent already has
+its own separate (possibly permanent, staff-visible) reservation from
+before merge support existed, and this function will never cancel/replace
+that automatically. Verified against fakes first (5 cases: fresh merge,
+already-merged no-op, partial-migration conflict, different-confirmation-
+number conflict, id_map-write-failure cancels the hold) before touching
+anything live.
+
+Re-ran push live after the fix: both Blu/Crane pairs correctly reported as
+CONFLICT with nothing written (no bad state, no wasted attempt) -- the fix
+verified clean against the exact real data that exposed the gap.
+
+Resolving the two conflicts required cancelling the existing standalone
+PERMANENT reservations (ACEB53, ACEB54 -- confirmed via get_booking()
+first that touching them was intended, not automatic): cancelled both,
+marked their id_map entries cancelled, then pushed each pair as one merged
+temporary hold -- Blu's pair (party_size 5+6=11) -> ACEB84, Crane's pair
+(6+6=12) -> ACEB85, both auto-assigned 2 lanes. Verified live via
+get_reservation_service_options() (assetNames=['Lane 1','Lane 2'] for
+both), converted both to permanent via commit_all_holds(), then verified
+again: ACEB84/ACEB85 resolve live, ACEB53/ACEB54 now error out (gone).
+id_map now has all 4 constituent Bookeo booking numbers
+(1577608216791650/1577608218495368 -> ACEB84,
+1577608217573361/1577608211374109 -> ACEB85) each carrying a
+`merged_with` field pointing at its sibling.
+
+Net: 40/40 of the current future scope is now migrated (38 standalone +
+2 merged pairs covering 4 Bookeo bookings = 42 Bookeo booking numbers
+total, since the 2 merges combine 4 into 2 SCS reservations). The 11 old
+cancelled entries remain cancelled -- 10 are simply past-dated
+(unbookable, as expected) and the 11th (1577608053234202) is genuinely
+canceled in Bookeo and correctly stays untouched. No temporary holds left
+outstanding.
+
+## Pivot to Events pipeline (2026-08-26/27) -- migration target changed
+
+The company doesn't use the SCS Reservations calendar operationally, only
+the Events calendar, so the migration target moved off push.py
+(Reservations) to a new Events pipeline: migration/push_events.py +
+transform.transform_booking_to_event() + a separate id map
+(migration/event_id_map.json, gitignored). Key differences from the
+Reservations path, all load-bearing:
+  - Events have NO Temporary Hold. mode="test" is a server-side dry run
+    (creates nothing); mode="apply" creates a REAL, immediately
+    staff-visible Event with no verify-then-commit step and no rollback.
+    push_events.py defaults every entry point to mode="test".
+  - There is no Events availability-check endpoint (nothing like
+    ReservationCheckAvailability), so the pipeline cannot detect or avoid
+    double-booking the "Bowling Lanes" Location. SCS's own
+    maxConcurrentEvents cap on that Location (24) is the only backstop.
+  - No Events read/get endpoint in Reserve/events.py either, so
+    post-write verification is limited to the mode="apply" response
+    (status + eventNumber/uniqueIds). transform.py's EVENT_FUNCTION_TYPE
+    is still the hardcoded placeholder "Miscellaneous" -- pushed events
+    land under Miscellaneous until an SCS admin creates a Bowling
+    Function Type tied to the Bowling Lanes Location.
+  - The 40 permanent Reservations from the 2026-08-24 commit run were
+    left in place (that calendar is unused, so they're harmless); they
+    were NOT migrated to Events or cleaned up. Bookings migrated before
+    2026-08-27 therefore exist BOTH as a Reservation and as an Event.
+
+2026-08-27 ~01:00 UTC: ran push_events.py mode="apply" against the then
+future scope -- 44 Events created in production SCS (event_id_map.json,
+status "created"). This is undocumented anywhere but the id map + this
+note; it predates neither Project_details nor the project memory being
+updated for it.
+
+## Live run 2026-08-30: 3 new future bookings pushed as Events -- 3/3 created
+
+Re-surveyed Bookeo future scope read-only (31-day chunks from today,
+stop after 3 empty): 30 future bookings, 0 canceled, out to 2026-12.
+27 already in event_id_map, 3 not:
+  1577608274775045  2026-09-11 8:00 PM  Weekend Bowling Reservations 90 min  party 4
+  1577608302408784  2026-09-18 6:00 PM  The Extreme                          party 10
+  1577608297280099  2026-09-26 3:30 PM  The Extreme                          party 13
+Ran push_events.py mode="test" for all 3 first -> all status=Created, no
+messages. Then mode="apply" (user chose Events/apply over the Reservations
+pipeline when asked): all 3 created --
+  1577608274775045 -> event 15705-1  (event.uniqueId 5362b054-...)
+  1577608302408784 -> event 15706-1  (event.uniqueId 281c701f-...)
+  1577608297280099 -> event 15707-1  (event.uniqueId 6870a39a-...)
+event_id_map.json now 47 entries; re-survey confirms 30/30 of current
+future scope migrated as Events, 0 outstanding. No read-back possible
+(no Events get endpoint) beyond the apply responses. 17 event_id_map
+entries have aged out of the forward 31-day-chunk window (past events).

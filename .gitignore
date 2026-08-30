@@ -1,0 +1,9 @@
+# bookeo/, Reserve/, and migration/ are each their own separate git repo --
+# not tracked from this root repo.
+/bookeo/
+/Reserve/
+/migration/
+
+__pycache__/
+*.pyc
+.env
