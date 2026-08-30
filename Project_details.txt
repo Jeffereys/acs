@@ -510,3 +510,12 @@ event_id_map.json now 47 entries; re-survey confirms 30/30 of current
 future scope migrated as Events, 0 outstanding. No read-back possible
 (no Events get endpoint) beyond the apply responses. 17 event_id_map
 entries have aged out of the forward 31-day-chunk window (past events).
+
+2026-08-30: migration/id_map.json and migration/event_id_map.json are now
+TRACKED in the migration/ repo (previously gitignored). They're the only
+idempotency guard -- IdMap.is_migrated() is what stops a re-run from
+re-creating events, and there's no Events read endpoint to rebuild the map
+from SCS. They hold opaque IDs + status + timestamps only, no PII. NOTE:
+the migration/ and bookeo/ repos and this top-level repo still have NO git
+remote, and Reserve/ is 3 commits ahead of origin -- a clean local delete
+would still lose everything. Push all four somewhere before deleting.
