@@ -519,3 +519,109 @@ from SCS. They hold opaque IDs + status + timestamps only, no PII. NOTE:
 the migration/ and bookeo/ repos and this top-level repo still have NO git
 remote, and Reserve/ is 3 commits ahead of origin -- a clean local delete
 would still lose everything. Push all four somewhere before deleting.
+
+## Calendar color for migrated events (2026-08-31)
+
+Migrated events pushed as stateType="New" render #3D85C6 blue on the SCS
+Events calendar, indistinguishable from staff-created events. Fix: push
+them as Event Status "Option Hold 5" instead, which the user colored
+#DACCEC (lavender) for the Burleson site under Settings > Event Calendar
+Look and Feel. "Option Hold 5" (stateType OPTION_HOLD_5, stateName
+"Option Hold 5", Prospect phase, 0% probability, stateValue 64) was NOT in
+Burleson's lifecycle models initially -- gateway returned HTTP 500 for it
+("The requested system lifecycle states could not be found"). An SCS admin
+added it to the Burleson *Standard Lifecycle* model (the one gateway-
+created events use; Short Lifecycle still lacks it) on 2026-08-31, after
+which EventUpdate with OPTION_HOLD_5 returns "Merged".
+
+Changes made 2026-08-31:
+  - migration/transform.py: EVENT_STATUS "New" -> "OPTION_HOLD_5" so all
+    future push_events.py runs land there.
+  - One-time backfill (scratchpad recolor_events.py, EventUpdate
+    event.lifecycleState.stateType, future-scoped via a Bookeo get_booking
+    date lookup per booking number): 29 future migrated events moved
+    New -> Option Hold 5, mode="apply", all 29 "Merged". The 18 past-dated
+    event_id_map entries were deliberately left as "New" (recoloring a
+    completed event into a hold state is semantically odd, user's call).
+  - No read-back (no Events get endpoint); verification is the "Merged"
+    responses + a manual calendar spot-check by the user.
+  - Reversible: set stateType back to "NEW" via the same EventUpdate path.
+Still open: EVENT_FUNCTION_TYPE placeholder "Miscellaneous".
+
+## Idempotency review (2026-08-31): "Option A" tried and REJECTED by the gateway
+
+Concern raised: event_id_map.json is the ONLY thing preventing duplicate
+Events on a re-run -- unrecoverable if lost (no Events read endpoint wired
+up to rebuild it), race-prone (whole-file rewrite, no lock), and there is
+a crash window between create_event() committing server-side and
+id_map.record() persisting where a died process => next run re-creates the
+Event. User asked for a best-practice fix that doesn't make a local file
+load-bearing.
+
+"Option A" attempted: stamp every Event with a deterministic
+function.event.uniqueId = uuid5(fixed-namespace, "bookeo:{bookingNumber}")
+and let SCS upsert on it (docs: EventFunctionImport response status enum
+{Created, Merged, Failed}, "event.uniqueId ... may match input if
+pre-specified"). Code was written (transform.event_unique_id_for + field
+injection, push_events defensive parsing, tests) then REVERTED after live
+mode="test" probes against production disproved it. No data was created --
+all probes were mode="test" / read-only.
+
+Probe results (scratchpad verify_idempotency.py + probe.py, 2026-08-31):
+  - Synthetic payload WITH function.event.uniqueId set to a fresh uuid5,
+    mode="test"  ->  status "Failed", message "No event found for the
+    specified uniqueId." So the gateway RECOGNISES the field but treats it
+    strictly as a lookup key for an EXISTING event; it will NOT accept a
+    client-chosen id to create a new one. Option A is dead on this gateway.
+  - Same payload WITHOUT that field, mode="test"  ->  status "Created",
+    clean (baseline: the payload is otherwise valid).
+  - A REAL already-migrated booking (1577603189305668, Victoria Deaton,
+    2026-09-19, SCS event d5026170-... already exists from the 2026-08-27
+    run), re-transformed WITHOUT the field, mode="test"  ->  status
+    "Created" (NOT "Merged"). So this account has NO native
+    duplicate-matching configured for EventFunctionImport -- a re-run with
+    no id-map guard genuinely would create duplicate Events (and re-match
+    the contact into a new contact.uniqueId).
+
+Where that leaves idempotency: EventFunctionImport is create-only for new
+Events; SCS owns the Event id space and does no server-side dedupe here.
+The only ways to stop depending on the local file:
+  B. Query-before-write. Add a custom/UDF text field to the EventFunction-
+     Import header (Settings > Events > Manage Event and Function Gateway
+     Put Requests) and store the Bookeo bookingNumber in it on every push;
+     configure an Event or Function Gateway GET Request (Settings > Events
+     > Manage Function Gateway Get Requests -- filterable, docs show a
+     startDate range example) that can filter on that field; before each
+     push, GET by bookingNumber and skip if found. Makes SCS the source of
+     truth. Needs two SCS admin config changes; no code blocker.
+  B-lite. Skip the custom field: configure a Function GET Request filtered
+     on function.startDate range, pull the migration window, and match
+     already-migrated bookings fuzzily on (startDate + startTime + contact
+     email / event name). No schema change, still needs the GET Request +
+     a wrapper method. Fuzzy: risks colliding with staff-created events.
+  C. EventCreated webhook -> write the mapping to a durable external store
+     (hosted KV / DB, not a repo file). Still external state, but robust
+     and not a fragile file.
+  D. Keep event_id_map.json but make it REBUILDABLE from B's GET Request
+     (rebuild_map_from_scs()). Pragmatic minimum -- losing the file stops
+     being a data-loss event.
+
+Recommendation: B (or D as a stepping stone). All of them need an SCS
+admin to add a GET Request (and, for B, a custom header field) first --
+that's the blocker, not the Python.
+
+Meanwhile: event_id_map.json REMAINS the idempotency guard. No code
+shipped from this review. The 47 existing entries stay authoritative;
+re-running push_events over an already-migrated window is still safe only
+because is_migrated() skips those rows.
+
+Unrelated real bug found while here (worth fixing regardless of the above):
+push_event_booking() records site_unique_id from uniqueIds.get(
+"event.uniqueId"), but the apply response nests it under
+uniqueIds["event.uniqueId"] only in the docs' generic example -- the live
+response shape is {"contact.uniqueId","eventNumber","event.uniqueId",
+"functionNumber","uniqueId"}, so the current code DOES capture event.uniqueId
+correctly BUT the pre-2026-08-27 entries predate that line and show null.
+Also the response-parse path (resp["results"][0]) is unguarded -> an
+unexpected 200 shape crashes the run after the Event was created. Both are
+cheap hardening if push_events is touched again.
