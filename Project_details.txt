@@ -727,7 +727,41 @@ READ-BACK DESIGN (no per-booking call):
      +2y), extract every "BKO:<n>" -> reconstruct event_id_map.json from
      SCS. This is the "file is now rebuildable" capability.
 
-STILL UNVERIFIED: that function.event.interfaceAccountId PERSISTS on
-mode="apply" (test mode only proved acceptance). Now checkable end-to-end:
-create one Event apply-mode with interfaceAccountId="BKO:<n>", then read it
-back via BookeoMigration_Lookup for that date; cancel if it was a throwaway.
+## End-to-end throwaway test 2026-08-31: interfaceAccountId PERSISTS + reads back
+
+Created one real throwaway Event, mode="apply":
+  eventNumber 15898-1, event.uniqueId 4404f7e1-908f-4834-893a-962cfdbbe027
+  name "ZZ-DELETE-ME Readback Test", 11/15/2027 2:00 PM, Option Hold 5,
+  function.event.interfaceAccountId = "BKO:ZZTEST-1788224595"
+Read it straight back via BookeoMigration_Lookup
+(filters=[["startDate","EQUAL_TO","11/15/2027"]]): the row came back with
+interfaceAccountId exactly "BKO:ZZTEST-1788224595". SO THE MARKER PERSISTS
+AND IS READABLE. The whole Option-B design is validated end to end.
+
+CLEANUP SNAG: gateway cancel of that event failed.
+  - events.py cancel_event() sends stateType "Cancelled" -> "The requested
+    system lifecycle states could not be found." The correct token is
+    "CANCELLED" (uppercase; confirmed via get_event_lifecycle_models --
+    both Burleson models have stateType CANCELLED, stateValue 500).
+  - With "CANCELLED": "A salesperson must be specified if cancelling an
+    Event." event.salesperson.userName is NOT a valid gateway field for
+    this account's EventUpdate; event.salesperson.emailAddress /
+    .firstName/.lastName ARE valid but need a real SCS salesperson (my
+    guesses -> "No salesperson found").
+  - event.lostBusinessReason "Other" is accepted ("Test" -> "selected
+    cancelled reason could not be found").
+  => cancel_event() is broken as written (wrong token, no salesperson).
+     The throwaway event 15898-1 was left for the user to delete in the
+     ReserveCloud UI (full admin -> hard delete). NOT a blocker for the
+     migration (which never cancels).
+
+Burleson Standard Lifecycle states (get_event_lifecycle_models): NEW(10),
+INQUIRY(20), PROPOSAL(40), OPTION_HOLD_5(64), TENTATIVE(100), DEFINITE(120),
+EVENT_ORDER(160), ... CLOSED, CANCELLED(500). Only OPTION_HOLD_5 among the
+20 option-hold slots (admin added just that one on 2026-08-31). Short
+Lifecycle: NEW, DEFINITE, EVENT_ORDER, CLOSED, CANCELLED (no OPTION_HOLD_5).
+
+NEXT: implement the write (interfaceAccountId="BKO:<bookingNumber>" in
+transform_booking_to_event) + the read-back sweep (windowed startDate
+query -> set of "BKO:" markers -> skip already-present bookings; same
+sweep rebuilds event_id_map.json).
