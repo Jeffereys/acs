@@ -848,6 +848,17 @@ CURRENT hierarchy position, so the one setting change covered all 52
 existing Events + all future ones. Do not re-raise the agent's Ownership
 Group. The agent's Role was left at Level 1A (capability, orthogonal).
 
+## 2 more new bookings migrated (2026-09-01)
+
+Re-survey: forward scope past Sept 2026 fully migrated; 2 NEW in Sept,
+both pushed mode="apply", Created / Option Hold 5:
+  1577609019525378  Kim Flores      09/04  -> Event 15933-1
+  1577609011555852  Shadrack Sigei  09/05  -> Event 15934-1
+Read back via BookeoMigration_Lookup. Owned by api_key agent (now Level
+3A) so staff-editable from creation. event_id_map.json -> 54 entries
+(migration@4e47d53). Cumulative: 47 backfilled + 5 (2026-08-31) + 2
+(2026-09-01) = 54 (incl. the ZZTEST throwaway that also carries a marker).
+
 OUTSTANDING:
   1. Delete throwaway Event 15898-1 ("ZZ-DELETE-ME Readback Test",
      11/15/2027, marker "BKO:ZZTEST-1788224595") in ReserveCloud -- gateway
@@ -856,5 +867,5 @@ OUTSTANDING:
      before deletion it adds a bogus cache entry (harmless, just delete it).
   2. events.py cancel_event() still bugged (stateType "Cancelled" should be
      "CANCELLED"; also needs a salesperson) -- unrelated to the migration.
-  3. 2 more new Bookeo bookings appeared 2026-09-01 (1577609019525378,
-     1577609011555852) -- unmigrated.
+  3. EVENT_FUNCTION_TYPE still the "Miscellaneous" placeholder (no Bowling
+     Function Type configured for the site).
