@@ -693,3 +693,41 @@ range for sure; whether interfaceAccountId is a filter param is still
 unknown -- the screen's "Event Gateway Get Filter Parameter Fields" list
 was truncated at the "Billing Contact -" entries. If it's not filterable,
 date-range-filter the window + match interfaceAccountId locally.
+
+## BookeoMigration_Lookup Get Request created + tested read-only (2026-08-31)
+
+The user created the Event Gateway Get Request `BookeoMigration_Lookup`
+(Settings > Events > Manage Event Gateway Get Requests) and granted the
+`api_key` gateway agent access. Columns (header order):
+  interfaceAccountId, uniqueId, eventNumber, name, startDate, startTime,
+  lifecycleState.stateType, functions.locations.name
+One baked-in filter: startDate GREATER_THAN_OR_EQUAL_TO 01/01/2020.
+
+Read-only test calls (client.get_request):
+  - Works. Flat format: {rootEntity:"event", count:<total>, header:[...],
+    results:[[...],...]}. count is the org-wide total (11924 events;
+    ~689 in the forward window).
+  - URL filter params THAT WORK: startDate, endDate (date fields,
+    MM/DD/YYYY), eventNumber, uniqueId. Paging works (first_result +
+    max_results<=100, count for total).
+  - URL filter params REJECTED "[400] Invalid filter field":
+    interfaceAccountId, site.name, lifecycleState.stateType, name.
+    -> The UI's Add/Edit-Filters field dropdown is NOT the URL filter
+    whitelist. interfaceAccountId can't be filtered server-side.
+  - interfaceAccountId is None on ALL 11924 events -> the field is
+    completely unused on this account. Safe to use as the Bookeo marker,
+    zero collision risk. (Answers the open "is it used by another
+    integration" question: no.)
+
+READ-BACK DESIGN (no per-booking call):
+  1. Per run: query BookeoMigration_Lookup with startDate bracketing the
+     push window, page through all results, collect interfaceAccountId
+     values beginning "BKO:". Check each booking against that set.
+  2. Full map rebuild: same sweep over a wide startDate range (today ->
+     +2y), extract every "BKO:<n>" -> reconstruct event_id_map.json from
+     SCS. This is the "file is now rebuildable" capability.
+
+STILL UNVERIFIED: that function.event.interfaceAccountId PERSISTS on
+mode="apply" (test mode only proved acceptance). Now checkable end-to-end:
+create one Event apply-mode with interfaceAccountId="BKO:<n>", then read it
+back via BookeoMigration_Lookup for that date; cancel if it was a throwaway.
