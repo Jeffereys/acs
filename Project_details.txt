@@ -808,12 +808,21 @@ LIVE (read-only + mode=test, no writes):
     (1577608316866649, 1577608313583440) validated "Created". Those would
     be migrated on a real --apply run (separate from this work).
 
+BACKFILL DONE (2026-08-31): `backfill-markers --apply` ran -- 47/47
+EventUpdate "Merged". Verified: a wide migrated_booking_numbers() sweep
+(06/2026-06/2027) now returns exactly the 47 cache booking numbers, 0
+missing, 0 extra. event_id_map.json is now fully reconstructible from SCS
+-> no longer load-bearing. (The tracked event_id_map.json file itself was
+NOT modified -- backfill only writes to SCS; `rebuild` would flatten the
+richer cache entries so it's kept as a recovery-only tool.)
+
 OUTSTANDING:
-  1. Run `python migration/push_events.py backfill-markers --apply` (47
-     EventUpdates, sets an unused field, idempotent).
-  2. Delete throwaway Event 15898-1 ("ZZ-DELETE-ME Readback Test",
-     11/15/2027) in ReserveCloud -- gateway cancel needs a salesperson we
-     can't supply. If `rebuild` is run over Nov 2027 before it's deleted it
-     will add a bogus "ZZTEST-..." cache entry (harmless, delete it).
+  1. Delete throwaway Event 15898-1 ("ZZ-DELETE-ME Readback Test",
+     11/15/2027, marker "BKO:ZZTEST-1788224595") in ReserveCloud -- gateway
+     cancel needs a salesperson we can't supply. It shows up in a Nov-2027
+     sweep as booking "ZZTEST-1788224595"; if `rebuild` covers that month
+     before deletion it adds a bogus cache entry (harmless, just delete it).
+  2. Migrate the 2 genuinely-new Bookeo bookings 1577608316866649 and
+     1577608313583440 (validated "Created" in test mode this session).
   3. events.py cancel_event() still bugged (stateType "Cancelled" should be
      "CANCELLED"; also needs a salesperson) -- unrelated to the migration.
