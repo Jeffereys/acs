@@ -625,3 +625,45 @@ correctly BUT the pre-2026-08-27 entries predate that line and show null.
 Also the response-parse path (resp["results"][0]) is unguarded -> an
 unexpected 200 shape crashes the run after the Event was created. Both are
 cheap hardening if push_events is touched again.
+
+## Where to stash the Bookeo booking number on the SCS side, no schema change (2026-08-31)
+
+Goal: store the source booking id ON the Event so idempotency can be
+rebuilt from SCS, WITHOUT asking the admin to add a custom/UDF field.
+Probed every plausible field as an extra EventFunctionImport header column,
+mode="test" (no writes). SCS validates field names and 400s unknowns
+("<field> is not a valid field for gateway requests"), so the probe is
+authoritative. Accepted free-text-ish fields on this account:
+  - function.event.notes         -> Created  (already used by the pipeline
+                                    for party breakdown/addons; staff see &
+                                    edit this -> marker can be wiped)
+  - function.event.billingNotes  -> Created  (free text, low staff
+                                    visibility -> BEST place for the marker)
+  - function.event.marketType    -> Created  (picklist "Market" -- wrong
+                                    semantics, pollutes sales reporting, skip)
+  - function.event.referralType  -> Created  (picklist -- skip)
+Rejected (not valid gateway fields for this account): internalNotes,
+description, referenceNumber, reference, externalReference, externalId,
+sourceSystem, customData(N).tx00/b00, publicNotes, privateNotes,
+accountingNotes, postAs, tags, udf1, customField1, leadSource, campaign,
+externalConfirmationNumber, confirmationNumber, function.notes/comments/
+description, contact.notes.
+
+Plan: write the booking number into function.event.billingNotes, prefixed
+(e.g. "BKO:1577603189305668"). transform_booking_to_event() adds it to
+`fields`; no other code change on the write side.
+
+STILL NEEDS ONE ADMIN ACTION (unavoidable): a read-back. Probed ~14 likely
+Get Request names (Function, GetFunctions, EventGet, ...) -> none exist for
+this account. So a Function/Event Gateway Get Request must be created
+(Selected Columns incl. Event Billing Notes + start date/time + contact
+email; filter on function.startDate range, ideally EQUAL_TO on billing
+notes) and the Gateway Agent granted permission to call it. Draft of that
+request: SCS_admin_request_function_get_request.md (repo root). This is now
+the ONLY blocker and it's a report-style config, not a data-model change.
+
+NOT YET CONFIRMED: that billingNotes actually PERSISTS on mode="apply"
+(test mode only proves the field is accepted, not stored) and that it's
+readable/filterable in a Get Request. Both fall out of the first real use
+once the Get Request exists; or do a one-Event apply test + user checks the
+Event in ReserveCloud, then cancel it.
