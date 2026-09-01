@@ -830,6 +830,24 @@ Read back via BookeoMigration_Lookup by BKO: marker; re-run mode="test"
 skips all 5 via the SCS sweep. event_id_map.json 47 -> 52 (committed
 migration@64fef34).
 
+## Migrated events weren't staff-editable -- fixed via agent Ownership Group (2026-09-01)
+
+Symptom: staff could view but not edit the migrated Events. Cause:
+transform omits owner/salesperson, so every migrated Event is owned by the
+`api_key` gateway agent, whose Ownership Group was "Level 1: Full User
+Access with Full Admin" -- the top of the hierarchy, so only full-admin
+users could edit down to it.
+
+Fix (SCS admin, no code): Settings > Users > Manage Gateway Agents > edit
+`api_key` > Ownership Group  Level 1 -> "Level 3A: Full User/Owner Only
+Access (Both Reservations & Events)". "Full User" keeps the agent's write
+capability (re-verified: EventFunctionImport mode=test still returns
+Created). Verified staff can now edit both a new Event (15910-1) and the
+oldest migrated one (15553-1) -- SCS computes edit access from the owner's
+CURRENT hierarchy position, so the one setting change covered all 52
+existing Events + all future ones. Do not re-raise the agent's Ownership
+Group. The agent's Role was left at Level 1A (capability, orthogonal).
+
 OUTSTANDING:
   1. Delete throwaway Event 15898-1 ("ZZ-DELETE-ME Readback Test",
      11/15/2027, marker "BKO:ZZTEST-1788224595") in ReserveCloud -- gateway
@@ -838,3 +856,5 @@ OUTSTANDING:
      before deletion it adds a bogus cache entry (harmless, just delete it).
   2. events.py cancel_event() still bugged (stateType "Cancelled" should be
      "CANCELLED"; also needs a salesperson) -- unrelated to the migration.
+  3. 2 more new Bookeo bookings appeared 2026-09-01 (1577609019525378,
+     1577609011555852) -- unmigrated.
