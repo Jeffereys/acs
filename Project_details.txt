@@ -667,3 +667,29 @@ NOT YET CONFIRMED: that billingNotes actually PERSISTS on mode="apply"
 readable/filterable in a Get Request. Both fall out of the first real use
 once the Get Request exists; or do a one-Event apply test + user checks the
 Event in ReserveCloud, then cancel it.
+
+UPDATE (2026-08-31, from the user's "Manage Event Gateway Get Requests"
+screen): "No records to view" -> no Event Get Request exists (matches the
+probe). The screen's "Event Gateway Get Fields" reference resolves the
+column names, and a better marker field turned up:
+
+  function.event.interfaceAccountId  -> accepted by EventFunctionImport
+  (mode=test "Created"); Get column "Interface Account ID" = interfaceAccountId,
+  Length 0-128. Semantically an integration/interface id field -- staff
+  never touch it, unlike billingNotes ("Billing Notes", billingNotes,
+  Length 0-256, which staff may use for real billing). Also tried
+  legacyEventNumber (perfect name) and inHouseAccountNumber/pmsGroupNumber
+  -> all 400 "not a valid field for gateway requests".
+
+REVISED PLAN: store the marker in function.event.interfaceAccountId
+(prefixed, e.g. "BKO:1577603189305668"); billingNotes is the fallback.
+Confirm with the admin that interfaceAccountId isn't consumed by some other
+SCS interface/accounting integration on this account before using it.
+
+Get Request columns to select: interfaceAccountId, uniqueId (Event Unique
+Identifier), eventNumber, name, startDate, startTime, lifecycleState.stateType
+(returns "Option Hold 5"), functions.locations.name. Filter on startDate
+range for sure; whether interfaceAccountId is a filter param is still
+unknown -- the screen's "Event Gateway Get Filter Parameter Fields" list
+was truncated at the "Billing Contact -" entries. If it's not filterable,
+date-range-filter the window + match interfaceAccountId locally.
