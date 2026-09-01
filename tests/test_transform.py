@@ -22,6 +22,8 @@ from transform import (
     map_requests,
     transform_booking,
     transform_booking_to_event,
+    bookeo_marker,
+    parse_bookeo_marker,
     DEFAULT_REQUEST,
     EVENT_SITE_NAME,
     EVENT_LOCATION,
@@ -301,6 +303,7 @@ class TransformBookingToEventTests(unittest.TestCase):
         self.assertEqual(result["bookeo_customer_id"], "CUST1")
 
         fields = result["fields"]
+        self.assertEqual(fields["function.event.interfaceAccountId"], "BKO:BK1")
         self.assertEqual(fields["function.event.site"], EVENT_SITE_NAME)
         self.assertEqual(fields["function.event.name"], "Jane Doe")
         self.assertEqual(fields["function.event.lifecycleState.stateType"], EVENT_STATUS)
@@ -330,6 +333,27 @@ class TransformBookingToEventTests(unittest.TestCase):
     def test_raises_when_customer_has_no_phone(self):
         with self.assertRaises(ValueError):
             transform_booking_to_event(self._booking(), self._customer(phoneNumbers=[]))
+
+    def test_interface_account_id_marker_from_booking_number(self):
+        result = transform_booking_to_event(
+            self._booking(bookingNumber="1577600000000009"), self._customer()
+        )
+        self.assertEqual(
+            result["fields"]["function.event.interfaceAccountId"],
+            "BKO:1577600000000009",
+        )
+
+
+class BookeoMarkerTests(unittest.TestCase):
+    def test_marker_roundtrip(self):
+        self.assertEqual(bookeo_marker("1577603189305668"), "BKO:1577603189305668")
+        self.assertEqual(parse_bookeo_marker("BKO:1577603189305668"), "1577603189305668")
+
+    def test_parse_ignores_non_markers(self):
+        self.assertIsNone(parse_bookeo_marker(None))
+        self.assertIsNone(parse_bookeo_marker(""))
+        self.assertIsNone(parse_bookeo_marker("12345"))
+        self.assertIsNone(parse_bookeo_marker("SomeOtherIntegration:99"))
 
 
 if __name__ == "__main__":

@@ -55,6 +55,7 @@ class FakeEventsAPI:
 
 def make_transformed(booking_number, **field_overrides):
     fields = {
+        "function.event.interfaceAccountId": f"BKO:{booking_number}",
         "function.event.site": "Alley Cats Entertainment, Burleson",
         "function.event.name": "Jane Doe",
         "function.event.lifecycleState.stateType": "New",
@@ -151,6 +152,16 @@ class PushEventBookingTests(PushEventsTestCase):
         result = push_event_booking(api, id_map, make_transformed("BK1"), mode="apply")
         self.assertIsNotNone(result)
         self.assertTrue(id_map.is_migrated("BK1"))
+
+    def test_unparseable_response_raises_and_records_nothing(self):
+        class BadAPI:
+            def create_event(self, fields, mode="test"):
+                return {"unexpected": "shape"}
+
+        id_map = self.id_map()
+        with self.assertRaises(EventPushError):
+            push_event_booking(BadAPI(), id_map, make_transformed("BK1"), mode="apply")
+        self.assertFalse(id_map.is_migrated("BK1"))
 
 
 if __name__ == "__main__":

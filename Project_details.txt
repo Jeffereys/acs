@@ -761,7 +761,59 @@ EVENT_ORDER(160), ... CLOSED, CANCELLED(500). Only OPTION_HOLD_5 among the
 20 option-hold slots (admin added just that one on 2026-08-31). Short
 Lifecycle: NEW, DEFINITE, EVENT_ORDER, CLOSED, CANCELLED (no OPTION_HOLD_5).
 
-NEXT: implement the write (interfaceAccountId="BKO:<bookingNumber>" in
-transform_booking_to_event) + the read-back sweep (windowed startDate
-query -> set of "BKO:" markers -> skip already-present bookings; same
-sweep rebuilds event_id_map.json).
+## Option B implemented (2026-08-31)
+
+WRITE (migration/transform.py):
+  - BOOKEO_MARKER_PREFIX = "BKO:"; bookeo_marker(n) / parse_bookeo_marker(v).
+  - transform_booking_to_event() now emits
+    fields["function.event.interfaceAccountId"] = "BKO:<bookingNumber>".
+
+READ-BACK (migration/event_lookup.py, new):
+  - LOOKUP_REQUEST_NAME = "BookeoMigration_Lookup".
+  - iter_events(client, start, end) pages the Get Request filtered on
+    startDate (window widened +/-1 day for tz edge), yields rows whose
+    interfaceAccountId is a BKO: marker.
+  - migrated_booking_numbers() -> set (per-run guard);
+    migrated_event_index() -> {bkNo: {...}};
+    rebuild_id_map() -> reconstruct event_id_map.json from SCS.
+  - to_mmddyyyy() coerces ISO / date / MM-DD-YYYY inputs.
+
+WIRING (migration/push_events.py):
+  - run_push_events() sweeps migrated_booking_numbers() up front, prints the
+    count, skips any booking already an Event in SCS (and back-fills the
+    cache entry for it). Cache check is now the fast path, not the guard.
+  - push_event_booking(): response parse wrapped (KeyError/IndexError/
+    TypeError -> EventPushError); records confirmation_number = Event Number
+    (eventNumber) falling back to function uniqueId.
+  - New CLI: `rebuild <start> <end>` (rebuild_event_id_map) and
+    `backfill-markers [--apply]` (backfill_interface_markers).
+
+BACKFILL: the 47 pre-marker Events (2026-08-27/30 runs) have no marker in
+SCS, so rebuild/sweep can't see them -- event.interfaceAccountId IS
+writable via EventUpdate (tested: "Merged"), and all 47 cache entries have
+site_unique_id. `push_events.py backfill-markers` EventUpdates each of the
+47 with "BKO:<n>"; test mode = 47/47 "Merged", 0 failed. Run with --apply
+to finish making the cache non-load-bearing.
+
+TESTS: 101 green. transform BookeoMarkerTests + interfaceAccountId
+assertion; new tests/test_event_lookup.py (FakeGatewayClient, paging,
+prefix filter, window widening, ISO coercion, rebuild_id_map).
+
+LIVE (read-only + mode=test, no writes):
+  - event_lookup found the throwaway test event 15898-1 by its
+    "BKO:ZZTEST-1788224595" marker; real forward window -> 0 markers (the
+    47 are unmarked until backfill --apply).
+  - full run_push_events mode=test over Sep 2026: SCS sweep ran, cache
+    skipped the known ones, 2 genuinely-new Bookeo bookings
+    (1577608316866649, 1577608313583440) validated "Created". Those would
+    be migrated on a real --apply run (separate from this work).
+
+OUTSTANDING:
+  1. Run `python migration/push_events.py backfill-markers --apply` (47
+     EventUpdates, sets an unused field, idempotent).
+  2. Delete throwaway Event 15898-1 ("ZZ-DELETE-ME Readback Test",
+     11/15/2027) in ReserveCloud -- gateway cancel needs a salesperson we
+     can't supply. If `rebuild` is run over Nov 2027 before it's deleted it
+     will add a bogus "ZZTEST-..." cache entry (harmless, delete it).
+  3. events.py cancel_event() still bugged (stateType "Cancelled" should be
+     "CANCELLED"; also needs a salesperson) -- unrelated to the migration.
