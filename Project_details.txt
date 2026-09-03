@@ -859,13 +859,31 @@ Read back via BookeoMigration_Lookup. Owned by api_key agent (now Level
 (migration@4e47d53). Cumulative: 47 backfilled + 5 (2026-08-31) + 2
 (2026-09-01) = 54 (incl. the ZZTEST throwaway that also carries a marker).
 
+## 6 more new bookings migrated (2026-09-02/03)
+
+Full forward re-survey (31-day chunks from 2026-09-02, stopped after 3
+consecutive empty windows Jan/Feb/Mar 2027): 5 NEW in Sept 2026, 1 NEW in
+Dec 2026, all pushed mode="apply", all Created / Option Hold 5:
+  1577609031454114  Sept 2026  -> Event 15953-1
+  1577609026945756  Sept 2026  -> Event 15954-1
+  1577609023523466  Sept 2026  -> Event 15955-1
+  1577609024104242  Sept 2026  -> Event 15956-1
+  1577609025939379  Sept 2026  -> Event 15957-1
+  1577609022376372  Dec 2026   -> Event 15958-1
+event_id_map.json 54 -> 60 (migration@122c313, committed but NOT pushed --
+this sandbox has no GitHub credentials; push from a machine that has them).
+Run from this sandbox via the dotenv-shim + `source bookeo/.env; source
+Reserve/.env` approach (see [[acs_sandbox_no_pip]] memory); ran cleanly.
+
 OUTSTANDING:
-  1. Delete throwaway Event 15898-1 ("ZZ-DELETE-ME Readback Test",
+  1. migration@122c313 needs `git push origin master` from a machine with
+     GitHub credentials -- this sandbox can't push.
+  2. Delete throwaway Event 15898-1 ("ZZ-DELETE-ME Readback Test",
      11/15/2027, marker "BKO:ZZTEST-1788224595") in ReserveCloud -- gateway
      cancel needs a salesperson we can't supply. It shows up in a Nov-2027
      sweep as booking "ZZTEST-1788224595"; if `rebuild` covers that month
      before deletion it adds a bogus cache entry (harmless, just delete it).
-  2. events.py cancel_event() still bugged (stateType "Cancelled" should be
+  3. events.py cancel_event() still bugged (stateType "Cancelled" should be
      "CANCELLED"; also needs a salesperson) -- unrelated to the migration.
-  3. EVENT_FUNCTION_TYPE still the "Miscellaneous" placeholder (no Bowling
+  4. EVENT_FUNCTION_TYPE still the "Miscellaneous" placeholder (no Bowling
      Function Type configured for the site).
