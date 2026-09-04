@@ -888,6 +888,31 @@ count for the Sept-Oct window went 37 -> 39). Ran via the dotenv-shim +
 `set -a; source bookeo/.env; source Reserve/.env; set +a` +
 PYTHONPATH=<shim>:bookeo:Reserve:migration (see [[acs_sandbox_no_pip]]).
 
+## GitHub Actions (2026-09-04)
+
+Two workflows added (both committed, NOT pushed -- sandbox has no creds):
+  _acs/.github/workflows/ci.yml  (_acs@3746991) -- runs the 101-test
+    unittest suite on push/PR/dispatch. Checks out the 3 sibling code
+    repos (bookeo-scs-migration -> migration/, bookeo -> bookeo/,
+    SCS -> Reserve/) next to tests/ so the sys.path.insert("../migration")
+    lines resolve. Tests are fully mocked; the only secret is REPO_PAT
+    (read access to the 3 siblings, since GITHUB_TOKEN is scoped to _acs).
+  migration/.github/workflows/migrate.yml  (migration@44f8cd8) -- daily
+    cron 09:17 UTC + workflow_dispatch. Sweeps Bookeo forward in 6x 30-day
+    windows, `push_events.py push --limit 100`, --apply on schedule /
+    dry-run by default on manual dispatch (apply=true input to write).
+    Commits event_id_map.json back via migration-bot on apply runs.
+    concurrency group serializes runs. Idempotency = run_push_events()'s
+    SCS marker sweep (not the committed cache), so a re-run won't dup.
+  Secrets migrate.yml needs: BOOKEO_API_KEY, BOOKEO_SECRET_KEY,
+    SCS_GATEWAY_USERNAME, SCS_GATEWAY_PASSWORD, REPO_PAT.
+  Env var names confirmed: bookeo_api.py reads BOOKEO_API_KEY /
+    BOOKEO_SECRET_KEY; scs_gateway.py reads SCS_GATEWAY_USERNAME /
+    SCS_GATEWAY_PASSWORD (BOOKEO_APPLICATION_ID in .env is unused by code).
+  If the 3 code repos are public, the `token:` lines can be dropped and
+    REPO_PAT isn't needed. To make the schedule dry-run only, add
+    `&& inputs.apply` to the MODE_FLAG test in migrate.yml's Sweep step.
+
 ## GitHub remotes (2026-09-03)
 
 All four repos now have GitHub remotes and are pushed current (this sandbox
