@@ -874,6 +874,20 @@ event_id_map.json 54 -> 60 (migration@122c313).
 Run from this sandbox via the dotenv-shim + `source bookeo/.env; source
 Reserve/.env` approach (see [[acs_sandbox_no_pip]] memory); ran cleanly.
 
+## 3 more new bookings migrated (2026-09-04)
+
+Forward re-sweep from 2026-09-04 in 31-day windows, stopped after empty
+Nov 2026 -> May 2027 (checked through 2027-06-01). New bookings, all pushed
+mode="apply" / status Created / Option Hold 5:
+  1577609035035862  Sept 2026  -> Event 15969-1
+  1577609031402978  Sept 2026  -> Event 15970-1
+  1577609031062336  Oct  2026  -> Event 15971-1
+event_id_map.json 60 -> 63 (migration@3612b9a -- committed, NOT pushed;
+this sandbox still has no GitHub creds). Re-run test skips all 3 (SCS sweep
+count for the Sept-Oct window went 37 -> 39). Ran via the dotenv-shim +
+`set -a; source bookeo/.env; source Reserve/.env; set +a` +
+PYTHONPATH=<shim>:bookeo:Reserve:migration (see [[acs_sandbox_no_pip]]).
+
 ## GitHub remotes (2026-09-03)
 
 All four repos now have GitHub remotes and are pushed current (this sandbox
