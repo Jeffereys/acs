@@ -1,0 +1,63 @@
+# Runs the migration test suite (101 tests, all mocked -- no credentials,
+# no network, no production writes).
+#
+# The suite lives in this repo (_acs) under tests/, but the code under test
+# lives in three sibling repos, so the job checks them out alongside:
+#   migration/  <- Jeffereys/bookeo-scs-migration
+#   bookeo/     <- Jeffereys/bookeo
+#   Reserve/    <- Jeffereys/SCS
+# Each test file does sys.path.insert("../migration" etc.), so they must sit
+# directly under the workspace root next to tests/.
+#
+# REQUIRED SECRET:
+#   REPO_PAT  - a fine-grained PAT (or classic PAT with `repo` scope) that has
+#               READ access to the three sibling repos above. Needed only
+#               because GITHUB_TOKEN is scoped to this repo alone. If all
+#               three repos are public, delete the `token:` lines below.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout _acs (tests/)
+        uses: actions/checkout@v4
+
+      - name: Checkout migration/
+        uses: actions/checkout@v4
+        with:
+          repository: Jeffereys/bookeo-scs-migration
+          path: migration
+          token: ${{ secrets.REPO_PAT }}
+
+      - name: Checkout bookeo/
+        uses: actions/checkout@v4
+        with:
+          repository: Jeffereys/bookeo
+          path: bookeo
+          token: ${{ secrets.REPO_PAT }}
+
+      - name: Checkout Reserve/
+        uses: actions/checkout@v4
+        with:
+          repository: Jeffereys/SCS
+          path: Reserve
+          token: ${{ secrets.REPO_PAT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The suite is pure stdlib, but installing these keeps it working if a
+      # test ever imports the real bookeo_api / scs_gateway modules.
+      - name: Install deps
+        run: pip install requests python-dotenv
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
