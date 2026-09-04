@@ -870,20 +870,38 @@ Dec 2026, all pushed mode="apply", all Created / Option Hold 5:
   1577609024104242  Sept 2026  -> Event 15956-1
   1577609025939379  Sept 2026  -> Event 15957-1
   1577609022376372  Dec 2026   -> Event 15958-1
-event_id_map.json 54 -> 60 (migration@122c313, committed but NOT pushed --
-this sandbox has no GitHub credentials; push from a machine that has them).
+event_id_map.json 54 -> 60 (migration@122c313).
 Run from this sandbox via the dotenv-shim + `source bookeo/.env; source
 Reserve/.env` approach (see [[acs_sandbox_no_pip]] memory); ran cleanly.
 
+## GitHub remotes (2026-09-03)
+
+All four repos now have GitHub remotes and are pushed current (this sandbox
+has NO GitHub credentials -- every push/fetch here fails "could not read
+Username for https://github.com"; the pushes below were run by the user
+from El_Jefe/MINGW64, which has creds):
+  _acs (top)  -> https://github.com/Jeffereys/acs.git            (new repo,
+               master pushed -- 11 tracked files: Project_details.txt,
+               run.py, tests/, SCS_admin_request_function_get_request.md,
+               .gitignore; audited clean, .env + *.eml gitignored, the
+               three subrepos excluded via /bookeo/ /Reserve/ /migration/)
+  bookeo/     -> https://github.com/Jeffereys/bookeo.git          (new repo,
+               master pushed -- 6 files, audited clean, .env gitignored)
+  Reserve/    -> https://github.com/Jeffereys/SCS.git             (main,
+               "Everything up-to-date")
+  migration/  -> https://github.com/Jeffereys/bookeo-scs-migration.git
+               (master pushed, 4e47d53..122c313)
+Adding a remote for _acs and bookeo requires creating the empty GitHub repo
+first; the remotes themselves were added from the sandbox, only the pushes
+need a creds machine.
+
 OUTSTANDING:
-  1. migration@122c313 needs `git push origin master` from a machine with
-     GitHub credentials -- this sandbox can't push.
-  2. Delete throwaway Event 15898-1 ("ZZ-DELETE-ME Readback Test",
+  1. Delete throwaway Event 15898-1 ("ZZ-DELETE-ME Readback Test",
      11/15/2027, marker "BKO:ZZTEST-1788224595") in ReserveCloud -- gateway
      cancel needs a salesperson we can't supply. It shows up in a Nov-2027
      sweep as booking "ZZTEST-1788224595"; if `rebuild` covers that month
      before deletion it adds a bogus cache entry (harmless, just delete it).
-  3. events.py cancel_event() still bugged (stateType "Cancelled" should be
+  2. events.py cancel_event() still bugged (stateType "Cancelled" should be
      "CANCELLED"; also needs a salesperson) -- unrelated to the migration.
-  4. EVENT_FUNCTION_TYPE still the "Miscellaneous" placeholder (no Bowling
+  3. EVENT_FUNCTION_TYPE still the "Miscellaneous" placeholder (no Bowling
      Function Type configured for the site).
