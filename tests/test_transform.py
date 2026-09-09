@@ -343,6 +343,36 @@ class TransformBookingToEventTests(unittest.TestCase):
             "BKO:1577600000000009",
         )
 
+    def test_maps_contact_address_when_present(self):
+        customer = self._customer(streetAddress={
+            "address1": "123 Main St",
+            "address2": "Apt 4",
+            "city": "Burleson",
+            "state": "TX",
+            "postcode": "76028",
+            "countryCode": "US",
+        })
+        fields = transform_booking_to_event(self._booking(), customer)["fields"]
+        self.assertEqual(fields["function.event.contact.mailingAddress.address1"], "123 Main St")
+        self.assertEqual(fields["function.event.contact.mailingAddress.address2"], "Apt 4")
+        self.assertEqual(fields["function.event.contact.mailingAddress.city"], "Burleson")
+        self.assertEqual(fields["function.event.contact.mailingAddress.state"], "TX")
+        self.assertEqual(fields["function.event.contact.mailingAddress.zipCode"], "76028")
+        self.assertEqual(fields["function.event.contact.mailingAddress.country"], "US")
+
+    def test_partial_address_only_maps_present_parts(self):
+        customer = self._customer(streetAddress={"city": "Burleson", "state": "TX"})
+        fields = transform_booking_to_event(self._booking(), customer)["fields"]
+        self.assertEqual(fields["function.event.contact.mailingAddress.city"], "Burleson")
+        self.assertNotIn("function.event.contact.mailingAddress.address1", fields)
+        self.assertNotIn("function.event.contact.mailingAddress.zipCode", fields)
+
+    def test_no_address_fields_when_customer_has_none(self):
+        fields = transform_booking_to_event(self._booking(), self._customer())["fields"]
+        self.assertFalse(
+            [k for k in fields if k.startswith("function.event.contact.mailingAddress.")]
+        )
+
 
 class BookeoMarkerTests(unittest.TestCase):
     def test_marker_roundtrip(self):
