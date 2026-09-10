@@ -29,6 +29,7 @@ from transform import (
     EVENT_LOCATION,
     EVENT_FUNCTION_TYPE,
     EVENT_STATUS,
+    EVENT_SALESPERSON_USERNAME,
 )
 
 
@@ -313,6 +314,9 @@ class TransformBookingToEventTests(unittest.TestCase):
         self.assertEqual(fields["function.event.contact.lastName"], "Doe")
         self.assertEqual(fields["function.event.contact.email"], "jane@example.com")
         self.assertEqual(fields["function.event.contact.mobilePhone"], "555-123-4567")
+        self.assertEqual(
+            fields["function.event.salesperson.username"], EVENT_SALESPERSON_USERNAME
+        )
         self.assertEqual(fields["function.startDate"], "08/29/2026")
         self.assertEqual(fields["function.startTime"], "6:00 PM")
         self.assertEqual(fields["function.endTime"], "7:30 PM")
