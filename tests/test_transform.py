@@ -30,6 +30,8 @@ from transform import (
     EVENT_FUNCTION_TYPE,
     EVENT_STATUS,
     EVENT_SALESPERSON_USERNAME,
+    VENUES,
+    get_venue,
 )
 
 
@@ -388,6 +390,48 @@ class BookeoMarkerTests(unittest.TestCase):
         self.assertIsNone(parse_bookeo_marker(""))
         self.assertIsNone(parse_bookeo_marker("12345"))
         self.assertIsNone(parse_bookeo_marker("SomeOtherIntegration:99"))
+
+    def test_per_venue_marker_prefix(self):
+        hurst = VENUES["hurst"]
+        self.assertEqual(bookeo_marker("123", hurst), "BKO:ACEH:123")
+        self.assertEqual(parse_bookeo_marker("BKO:ACEH:123", hurst), "123")
+
+    def test_venue_markers_do_not_cross_parse(self):
+        burleson, hurst = VENUES["burleson"], VENUES["hurst"]
+        # Hurst's marker must not read as a Burleson booking (remainder isn't digits)
+        self.assertIsNone(parse_bookeo_marker("BKO:ACEH:123", burleson))
+        # Burleson's marker must not read as a Hurst booking (wrong prefix)
+        self.assertIsNone(parse_bookeo_marker("BKO:123", hurst))
+
+
+class VenueRoutingTests(unittest.TestCase):
+    def _booking(self, **o):
+        b = {"bookingNumber": "BK1", "startTime": "2026-08-29T18:00:00-05:00",
+             "endTime": "2026-08-29T19:30:00-05:00",
+             "participants": {"numbers": [{"peopleCategoryId": "Cadults", "number": 4}]},
+             "options": []}
+        b.update(o)
+        return b
+
+    def _customer(self):
+        return {"id": "C1", "firstName": "Jane", "lastName": "Doe",
+                "emailAddress": "j@e.com",
+                "phoneNumbers": [{"type": "mobile", "number": "555"}]}
+
+    def test_hurst_routes_site_location_and_marker(self):
+        f = transform_booking_to_event(self._booking(), self._customer(), VENUES["hurst"])["fields"]
+        self.assertEqual(f["function.event.site"], "Alley Cats Entertainment, Hurst")
+        self.assertEqual(f["function.locations"], VENUES["hurst"].event_location)
+        self.assertTrue(f["function.event.interfaceAccountId"].startswith("BKO:ACEH:"))
+
+    def test_default_venue_is_burleson(self):
+        f = transform_booking_to_event(self._booking(), self._customer())["fields"]
+        self.assertEqual(f["function.event.site"], "Alley Cats Entertainment, Burleson")
+        self.assertEqual(f["function.event.interfaceAccountId"], "BKO:BK1")
+
+    def test_get_venue_rejects_unknown(self):
+        with self.assertRaises(ValueError):
+            get_venue("dallas")
 
 
 if __name__ == "__main__":
